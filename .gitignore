@@ -1,0 +1,16 @@
+﻿# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# Docker
+.dockerignore
+
+# Azure
+local.settings.json
+
+# OS
+.DS_Store
+Thumbs.db
