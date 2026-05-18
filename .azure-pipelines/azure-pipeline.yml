@@ -89,7 +89,7 @@ stages:
 # ============================================
 - stage: Docker
   displayName: 'Build and Push Docker Image'
-  dependsOn: Build
+  dependsOn: Infrastructure
   condition: succeeded()
   jobs:
   - job: DockerBuildPush
@@ -124,7 +124,7 @@ stages:
 # ============================================
 - stage: Infrastructure
   displayName: 'Deploy Infrastructure'
-  dependsOn: Docker
+  dependsOn: Build
   condition: succeeded()
   jobs:
   - job: DeployInfra
@@ -156,7 +156,7 @@ stages:
 # ============================================
 - stage: DeployDev
   displayName: 'Deploy to Dev'
-  dependsOn: Infrastructure
+  dependsOn: Docker
   condition: succeeded()
   jobs:
   - deployment: DeployDev
