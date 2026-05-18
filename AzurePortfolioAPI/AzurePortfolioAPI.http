@@ -1,0 +1,6 @@
+@AzurePortfolioAPI_HostAddress = http://localhost:5052
+
+GET {{AzurePortfolioAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

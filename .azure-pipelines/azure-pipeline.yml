@@ -1,0 +1,240 @@
+# ============================================
+# Azure DevOps Build & Release Pipeline
+# Project 2 - C# .NET 8 API + Docker + Container Apps
+# ============================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - AzurePortfolioAPI/**
+      - docker/**
+      - infra/**
+      - .azure-pipelines/**
+
+variables:
+  serviceConnection: 'azure-service-connection'
+  location: 'eastus'
+  projectName: 'portfolioapi'
+  dockerfilePath: 'docker/Dockerfile'
+  imageTag: '$(Build.BuildId)'
+
+stages:
+
+# ============================================
+# STAGE 1 - BUILD & TEST
+# ============================================
+- stage: Build
+  displayName: 'Build and Test'
+  jobs:
+  - job: BuildAndTest
+    displayName: 'Build, Test and Publish'
+    pool:
+      name: Default
+    steps:
+
+    - task: UseDotNet@2
+      displayName: 'Use .NET 8 SDK'
+      inputs:
+        packageType: sdk
+        version: '8.0.x'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore packages'
+      inputs:
+        command: restore
+        projects: '**/*.csproj'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Build solution'
+      inputs:
+        command: build
+        projects: '**/*.csproj'
+        arguments: '--configuration Release --no-restore'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Run unit tests'
+      inputs:
+        command: test
+        projects: '**/*.Tests.csproj'
+        arguments: '--configuration Release --no-build --collect:"XPlat Code Coverage"'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish API'
+      inputs:
+        command: publish
+        publishWebProjects: false
+        projects: 'AzurePortfolioAPI/AzurePortfolioAPI.csproj'
+        arguments: '--configuration Release --output $(Build.ArtifactStagingDirectory)/publish'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish build artifact'
+      inputs:
+        pathToPublish: '$(Build.ArtifactStagingDirectory)/publish'
+        artifactName: 'api-artifact'
+
+# ============================================
+# STAGE 2 - BUILD & PUSH DOCKER IMAGE
+# ============================================
+- stage: Docker
+  displayName: 'Build and Push Docker Image'
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - job: DockerBuildPush
+    displayName: 'Docker Build and Push to ACR'
+    pool:
+      name: Default
+    steps:
+
+    - task: AzureCLI@2
+      displayName: 'Build and Push Docker image to ACR'
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: batch
+        scriptLocation: inlineScript
+        inlineScript: |
+          echo Getting ACR name...
+          for /f "tokens=*" %%a in ('az acr list --resource-group rg-$(projectName)-dev --query "[0].name" -o tsv') do set ACR_NAME=%%a
+          echo ACR Name: %ACR_NAME%
+
+          echo Logging into ACR...
+          az acr login --name %ACR_NAME%
+
+          echo Building Docker image...
+          docker build -f $(dockerfilePath) -t %ACR_NAME%.azurecr.io/$(projectName):$(imageTag) -t %ACR_NAME%.azurecr.io/$(projectName):latest .
+
+          echo Pushing Docker image...
+          docker push %ACR_NAME%.azurecr.io/$(projectName):$(imageTag)
+          docker push %ACR_NAME%.azurecr.io/$(projectName):latest
+
+          echo Docker image pushed successfully!
+
+# ============================================
+# STAGE 3 - DEPLOY INFRASTRUCTURE
+# ============================================
+- stage: Infrastructure
+  displayName: 'Deploy Infrastructure'
+  dependsOn: Docker
+  condition: succeeded()
+  jobs:
+  - job: DeployInfra
+    displayName: 'Deploy Bicep Infrastructure'
+    pool:
+      name: Default
+    steps:
+
+    - task: AzureCLI@2
+      displayName: 'Deploy Container Registry and Container Apps'
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: batch
+        scriptLocation: inlineScript
+        inlineScript: |
+          echo Deploying infrastructure...
+          az deployment sub create ^
+            --name "build-release-$(Build.BuildId)" ^
+            --location $(location) ^
+            --template-file infra/main.bicep ^
+            --parameters infra/main.parameters.json ^
+            --parameters environment=dev
+          echo Infrastructure deployed!
+
+# ============================================
+# STAGE 4 - DEPLOY TO DEV
+# ============================================
+- stage: DeployDev
+  displayName: 'Deploy to Dev'
+  dependsOn: Infrastructure
+  condition: succeeded()
+  jobs:
+  - deployment: DeployDev
+    displayName: 'Deploy to Dev Container App'
+    pool:
+      name: Default
+    environment: 'dev'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: 'Update Container App with new image'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: batch
+              scriptLocation: inlineScript
+              inlineScript: |
+                echo Getting ACR name...
+                for /f "tokens=*" %%a in ('az acr list --resource-group rg-$(projectName)-dev --query "[0].name" -o tsv') do set ACR_NAME=%%a
+
+                echo Updating Container App...
+                az containerapp update ^
+                  --name ca-$(projectName)-dev ^
+                  --resource-group rg-$(projectName)-dev ^
+                  --image %ACR_NAME%.azurecr.io/$(projectName):$(imageTag)
+
+                echo Getting app URL...
+                for /f "tokens=*" %%a in ('az containerapp show --name ca-$(projectName)-dev --resource-group rg-$(projectName)-dev --query "properties.configuration.ingress.fqdn" -o tsv') do set APP_URL=%%a
+                echo App deployed at: https://%%APP_URL%%
+
+# ============================================
+# STAGE 5 - DEPLOY TO PROD
+# Manual approval required
+# ============================================
+- stage: DeployProd
+  displayName: 'Deploy to Prod'
+  dependsOn: DeployDev
+  condition: succeeded()
+  jobs:
+  - deployment: DeployProd
+    displayName: 'Deploy to Prod Container App'
+    pool:
+      name: Default
+    environment: 'prod'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: 'Deploy infrastructure for Prod'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: batch
+              scriptLocation: inlineScript
+              inlineScript: |
+                echo Deploying prod infrastructure...
+                az deployment sub create ^
+                  --name "build-release-prod-$(Build.BuildId)" ^
+                  --location $(location) ^
+                  --template-file $(Build.SourcesDirectory)/infra/main.bicep ^
+                  --parameters $(Build.SourcesDirectory)/infra/main.parameters.json ^
+                  --parameters environment=prod
+                echo Prod infrastructure deployed!
+
+          - task: AzureCLI@2
+            displayName: 'Update Prod Container App'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: batch
+              scriptLocation: inlineScript
+              inlineScript: |
+                echo Getting ACR name...
+                for /f "tokens=*" %%a in ('az acr list --resource-group rg-$(projectName)-dev --query "[0].name" -o tsv') do set ACR_NAME=%%a
+
+                echo Updating Prod Container App...
+                az containerapp update ^
+                  --name ca-$(projectName)-prod ^
+                  --resource-group rg-$(projectName)-prod ^
+                  --image %ACR_NAME%.azurecr.io/$(projectName):$(imageTag)
+
+                echo Getting prod app URL...
+                for /f "tokens=*" %%a in ('az containerapp show --name ca-$(projectName)-prod --resource-group rg-$(projectName)-prod --query "properties.configuration.ingress.fqdn" -o tsv') do set APP_URL=%%a
+                echo Prod app deployed at: https://%%APP_URL%%
