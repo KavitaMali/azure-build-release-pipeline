@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("AzurePortfolioAPI")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+a7d0c4edfdc8ab8f4c6fc081d67a1921321c755c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3991b38038bdf063d95715c864ea35f604af12db")]
 [assembly: System.Reflection.AssemblyProductAttribute("AzurePortfolioAPI")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AzurePortfolioAPI")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

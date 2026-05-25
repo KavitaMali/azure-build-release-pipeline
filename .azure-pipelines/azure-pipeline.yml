@@ -85,7 +85,39 @@ stages:
         artifactName: 'api-artifact'
 
 # ============================================
-# STAGE 2 - BUILD & PUSH DOCKER IMAGE
+# STAGE 2 - DEPLOY ACR + RESOURCE GROUP ONLY
+# ============================================
+- stage: Infrastructure
+  displayName: 'Deploy Infrastructure (ACR only)'
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - job: DeployInfra
+    displayName: 'Deploy Resource Group and ACR'
+    pool:
+      name: Default
+    steps:
+
+    - checkout: self
+
+    - task: AzureCLI@2
+      displayName: 'Deploy Resource Group and ACR'
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: batch
+        scriptLocation: inlineScript
+        inlineScript: |
+          echo Deploying Resource Group and ACR...
+          az deployment sub create ^
+            --name "infra-$(Build.BuildId)" ^
+            --location $(location) ^
+            --template-file infra/main.bicep ^
+            --parameters infra/main.parameters.json ^
+            --parameters environment=dev
+          echo Infrastructure deployed!
+
+# ============================================
+# STAGE 3 - BUILD & PUSH DOCKER IMAGE
 # ============================================
 - stage: Docker
   displayName: 'Build and Push Docker Image'
@@ -117,42 +149,10 @@ stages:
           echo Pushing Docker image...
           docker push %ACR_NAME%.azurecr.io/$(projectName):$(imageTag)
           docker push %ACR_NAME%.azurecr.io/$(projectName):latest
-          echo Docker image pushed!
+          echo Docker image pushed successfully!
 
 # ============================================
-# STAGE 3 - DEPLOY INFRASTRUCTURE
-# ============================================
-- stage: Infrastructure
-  displayName: 'Deploy Infrastructure'
-  dependsOn: Build
-  condition: succeeded()
-  jobs:
-  - job: DeployInfra
-    displayName: 'Deploy Bicep Infrastructure'
-    pool:
-      name: Default
-    steps:
-
-    - checkout: self
-
-    - task: AzureCLI@2
-      displayName: 'Deploy Container Registry and Container Apps'
-      inputs:
-        azureSubscription: $(serviceConnection)
-        scriptType: batch
-        scriptLocation: inlineScript
-        inlineScript: |
-          echo Deploying infrastructure...
-          az deployment sub create ^
-            --name "build-release-$(Build.BuildId)" ^
-            --location $(location) ^
-            --template-file infra/main.bicep ^
-            --parameters infra/main.parameters.json ^
-            --parameters environment=dev
-          echo Infrastructure deployed!
-
-# ============================================
-# STAGE 4 - DEPLOY TO DEV
+# STAGE 4 - DEPLOY CONTAINER APP TO DEV
 # ============================================
 - stage: DeployDev
   displayName: 'Deploy to Dev'
@@ -160,7 +160,7 @@ stages:
   condition: succeeded()
   jobs:
   - deployment: DeployDev
-    displayName: 'Deploy to Dev Container App'
+    displayName: 'Deploy Container App - Dev'
     pool:
       name: Default
     environment: 'dev'
@@ -172,22 +172,48 @@ stages:
           - checkout: self
 
           - task: AzureCLI@2
-            displayName: 'Update Container App with new image'
+            displayName: 'Deploy Container App to Dev'
             inputs:
               azureSubscription: $(serviceConnection)
               scriptType: batch
               scriptLocation: inlineScript
               inlineScript: |
-                echo Getting ACR name...
+                echo Getting ACR details...
                 for /f "tokens=*" %%a in ('az acr list --resource-group rg-$(projectName)-dev --query "[0].name" -o tsv') do set ACR_NAME=%%a
-                echo Updating Container App...
-                az containerapp update ^
+                for /f "tokens=*" %%a in ('az acr credential show --name %ACR_NAME% --query "passwords[0].value" -o tsv') do set ACR_PASSWORD=%%a
+
+                echo Creating Container Apps Environment if not exists...
+                az containerapp env create ^
+                  --name cae-$(projectName)-dev ^
+                  --resource-group rg-$(projectName)-dev ^
+                  --location $(location) ^
+                  2>nul || echo Environment already exists
+
+                echo Deploying Container App...
+                az containerapp create ^
+                  --name ca-$(projectName)-dev ^
+                  --resource-group rg-$(projectName)-dev ^
+                  --environment cae-$(projectName)-dev ^
+                  --image %ACR_NAME%.azurecr.io/$(projectName):$(imageTag) ^
+                  --registry-server %ACR_NAME%.azurecr.io ^
+                  --registry-username %ACR_NAME% ^
+                  --registry-password %ACR_PASSWORD% ^
+                  --target-port 8080 ^
+                  --ingress external ^
+                  --min-replicas 0 ^
+                  --max-replicas 1 ^
+                  --env-vars ASPNETCORE_ENVIRONMENT=dev ^
+                  2>nul || az containerapp update ^
                   --name ca-$(projectName)-dev ^
                   --resource-group rg-$(projectName)-dev ^
                   --image %ACR_NAME%.azurecr.io/$(projectName):$(imageTag)
+
                 echo Getting app URL...
                 for /f "tokens=*" %%a in ('az containerapp show --name ca-$(projectName)-dev --resource-group rg-$(projectName)-dev --query "properties.configuration.ingress.fqdn" -o tsv') do set APP_URL=%%a
+                echo.
+                echo ============================================
                 echo App deployed at: https://%APP_URL%
+                echo ============================================
 
 # ============================================
 # STAGE 5 - DEPLOY TO PROD
@@ -199,7 +225,7 @@ stages:
   condition: succeeded()
   jobs:
   - deployment: DeployProd
-    displayName: 'Deploy to Prod Container App'
+    displayName: 'Deploy Container App - Prod'
     pool:
       name: Default
     environment: 'prod'
@@ -211,15 +237,15 @@ stages:
           - checkout: self
 
           - task: AzureCLI@2
-            displayName: 'Deploy Prod Infrastructure'
+            displayName: 'Deploy Infrastructure for Prod'
             inputs:
               azureSubscription: $(serviceConnection)
               scriptType: batch
               scriptLocation: inlineScript
               inlineScript: |
-                echo Deploying prod infrastructure...
+                echo Deploying Prod infrastructure...
                 az deployment sub create ^
-                  --name "build-release-prod-$(Build.BuildId)" ^
+                  --name "infra-prod-$(Build.BuildId)" ^
                   --location $(location) ^
                   --template-file infra/main.bicep ^
                   --parameters infra/main.parameters.json ^
@@ -227,18 +253,44 @@ stages:
                 echo Prod infrastructure deployed!
 
           - task: AzureCLI@2
-            displayName: 'Update Prod Container App'
+            displayName: 'Deploy Container App to Prod'
             inputs:
               azureSubscription: $(serviceConnection)
               scriptType: batch
               scriptLocation: inlineScript
               inlineScript: |
-                echo Getting ACR name...
+                echo Getting ACR details...
                 for /f "tokens=*" %%a in ('az acr list --resource-group rg-$(projectName)-dev --query "[0].name" -o tsv') do set ACR_NAME=%%a
-                echo Updating Prod Container App...
-                az containerapp update ^
+                for /f "tokens=*" %%a in ('az acr credential show --name %ACR_NAME% --query "passwords[0].value" -o tsv') do set ACR_PASSWORD=%%a
+
+                echo Creating Prod Container Apps Environment...
+                az containerapp env create ^
+                  --name cae-$(projectName)-prod ^
+                  --resource-group rg-$(projectName)-prod ^
+                  --location $(location) ^
+                  2>nul || echo Environment already exists
+
+                echo Deploying Prod Container App...
+                az containerapp create ^
+                  --name ca-$(projectName)-prod ^
+                  --resource-group rg-$(projectName)-prod ^
+                  --environment cae-$(projectName)-prod ^
+                  --image %ACR_NAME%.azurecr.io/$(projectName):$(imageTag) ^
+                  --registry-server %ACR_NAME%.azurecr.io ^
+                  --registry-username %ACR_NAME% ^
+                  --registry-password %ACR_PASSWORD% ^
+                  --target-port 8080 ^
+                  --ingress external ^
+                  --min-replicas 0 ^
+                  --max-replicas 1 ^
+                  --env-vars ASPNETCORE_ENVIRONMENT=prod ^
+                  2>nul || az containerapp update ^
                   --name ca-$(projectName)-prod ^
                   --resource-group rg-$(projectName)-prod ^
                   --image %ACR_NAME%.azurecr.io/$(projectName):$(imageTag)
+
                 for /f "tokens=*" %%a in ('az containerapp show --name ca-$(projectName)-prod --resource-group rg-$(projectName)-prod --query "properties.configuration.ingress.fqdn" -o tsv') do set APP_URL=%%a
+                echo.
+                echo ============================================
                 echo Prod app deployed at: https://%APP_URL%
+                echo ============================================

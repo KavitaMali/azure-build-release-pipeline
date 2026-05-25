@@ -41,20 +41,8 @@ module acr './modules/containerregistry.bicep' = {
   }
 }
 
-// Container Apps Environment + App
-module containerApp './modules/containerapp.bicep' = {
-  name: 'containerAppDeployment'
-  scope: rg
-  params: {
-    location: location
-    projectName: projectName
-    environment: environment
-    tags: tags
-    acrLoginServer: acr.outputs.acrLoginServer
-    acrName: acr.outputs.acrName
-  }
-}
+
 
 output resourceGroupName string = rg.name
 output acrLoginServer string = acr.outputs.acrLoginServer
-output containerAppUrl string = containerApp.outputs.containerAppUrl
+output acrName string = acr.outputs.acrName
