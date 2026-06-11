@@ -12,5 +12,4 @@ from code commit to containerized cloud deployment.
 ## Tech Stack
 C#, .NET 8, Azure DevOps, Docker, Bicep, Azure Container Apps, YAML Pipelines
 
-## Architecture
-[paste your architecture diagram or a screenshot of the pipeline]
+
